@@ -138,13 +138,14 @@ def laplacian_enhance(img: Image.Image, use_diagonal: bool = True) -> Image.Imag
     return enhanced_img, lap_img
 
 
-def sobel_gradient(img: Image.Image) -> Image.Image:
+def sobel_gradient(img: Image.Image):
     """
-    Gradiente de Sobel: magnitude do gradiente.
-      Gx = [[-1,0,1],[-2,0,2],[-1,0,1]]
-      Gy = [[-1,-2,-1],[0,0,0],[1,2,1]]
+    Gradiente de Sobel: magnitude do gradiente e componentes Gx, Gy.
+      Kx = [[-1,0,1],[-2,0,2],[-1,0,1]]
+      Ky = [[-1,-2,-1],[0,0,0],[1,2,1]]
       |G| = sqrt(Gx² + Gy²)
     Apenas para imagens grayscale.
+    Retorna tupla: (imagem_magnitude, imagem_gx, imagem_gy)
     """
     arr = np.array(img.convert("L"), dtype=np.float64)
 
@@ -159,8 +160,19 @@ def sobel_gradient(img: Image.Image) -> Image.Image:
     Gy = convolve(arr, Ky, mode='reflect')
     G = np.sqrt(Gx ** 2 + Gy ** 2)
 
-    # Normaliza para [0, 255]
-    if G.max() > 0:
-        G = G / G.max() * 255.0
+    def _normalize(a: np.ndarray) -> np.ndarray:
+        mx = np.abs(a).max()
+        if mx > 0:
+            return (a / mx * 127.5 + 127.5)  # Centraliza em 128
+        return a + 128
 
-    return Image.fromarray(np.clip(G, 0, 255).astype(np.uint8), mode="L")
+    def _norm_mag(a: np.ndarray) -> np.ndarray:
+        mx = a.max()
+        if mx > 0:
+            return a / mx * 255.0
+        return a
+
+    img_grad = Image.fromarray(np.clip(_norm_mag(G), 0, 255).astype(np.uint8), mode="L")
+    img_gx = Image.fromarray(np.clip(_normalize(Gx), 0, 255).astype(np.uint8), mode="L")
+    img_gy = Image.fromarray(np.clip(_normalize(Gy), 0, 255).astype(np.uint8), mode="L")
+    return img_grad, img_gx, img_gy

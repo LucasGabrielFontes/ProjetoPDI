@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from gui.panels import ImagePanel, MultiImagePanel, HistogramPanel
-from gui.widgets import LabeledSlider, LabeledCheckbox, StyledButton
+from gui.widgets import LabeledEntry, LabeledSlider, LabeledCheckbox, LabeledOptionMenu, StyledButton
 
 import processing.color as pcolor
 import processing.intensity as pintensity
@@ -47,10 +47,8 @@ PROCESSES = [
     ("butter_lpf",       "14a. Passa-Baixa Butterworth",       False, False),
     ("butter_hpf",       "14b. Passa-Alta Butterworth",        False, False),
     ("adaptive_median",  "15. Mediana Adaptativa",             True,  False),
-    ("gauss_noise",      "16. Ruído Gaussiano",                False, False),
-    ("salt_noise",       "17a. Ruído Sal",                     False, False),
-    ("pepper_noise",     "17b. Ruído Pimenta",                 False, False),
-    ("saltpepper_noise", "17c. Ruído Sal-e-Pimenta",           False, False),
+    ("gauss_noise",      "16. Ruído Gaussiano Aditivo",        False, False),
+    ("sp_noise",         "17. Ruído Sal-e-Pimenta",            False, False),
 ]
 
 
@@ -60,7 +58,7 @@ class App(tk.Tk):
         self.title("Processamento Digital de Imagens — UFPB")
         self.configure(bg="#1e1e2e")
         self.resizable(True, True)
-        self.minsize(1100, 680)
+        self.minsize(1200, 720)
 
         self._img_original: Image.Image | None = None
         self._img_result: Image.Image | None = None
@@ -114,7 +112,7 @@ class App(tk.Tk):
         main.rowconfigure(0, weight=1)
 
         # ── Painel esquerdo: lista + parâmetros + botões ──
-        left = tk.Frame(main, bg="#181825", width=280, relief="flat")
+        left = tk.Frame(main, bg="#181825", width=310, relief="flat")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.grid_propagate(False)
         left.columnconfigure(0, weight=1)
@@ -146,12 +144,31 @@ class App(tk.Tk):
         scrollbar.config(command=self._listbox.yview)
         self._listbox.bind("<<ListboxSelect>>", self._on_process_select)
 
-        # Painel de parâmetros
+        # Painel de parâmetros com scrollbar
         tk.Label(left, text="Parâmetros", font=("Segoe UI", 10, "bold"),
                  fg="#cdd6f4", bg="#181825").grid(row=2, column=0,
                                                    padx=8, pady=(8, 2), sticky="w")
-        self._param_frame = tk.Frame(left, bg="#181825")
-        self._param_frame.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
+
+        # Frame scrollable para parâmetros
+        param_outer = tk.Frame(left, bg="#181825")
+        param_outer.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
+        param_outer.columnconfigure(0, weight=1)
+
+        self._param_canvas = tk.Canvas(param_outer, bg="#181825", highlightthickness=0,
+                                        height=260)
+        param_scroll = tk.Scrollbar(param_outer, orient="vertical",
+                                     command=self._param_canvas.yview,
+                                     bg="#313244", troughcolor="#181825")
+        self._param_canvas.configure(yscrollcommand=param_scroll.set)
+        self._param_canvas.grid(row=0, column=0, sticky="ew")
+        param_scroll.grid(row=0, column=1, sticky="ns")
+
+        self._param_frame = tk.Frame(self._param_canvas, bg="#181825")
+        self._param_frame_id = self._param_canvas.create_window(
+            (0, 0), window=self._param_frame, anchor="nw"
+        )
+        self._param_frame.bind("<Configure>", self._on_param_frame_resize)
+        self._param_canvas.bind("<Configure>", self._on_param_canvas_resize)
 
         # Botão Aplicar
         btn_frame = tk.Frame(left, bg="#181825")
@@ -163,7 +180,7 @@ class App(tk.Tk):
         self._status_var = tk.StringVar(value="Abra uma imagem PNG para começar.")
         tk.Label(left, textvariable=self._status_var,
                  font=("Segoe UI", 8), fg="#585b70", bg="#181825",
-                 wraplength=260, justify="left"
+                 wraplength=290, justify="left"
                  ).grid(row=5, column=0, padx=8, pady=(0, 8), sticky="w")
 
         # ── Central: imagem original ──
@@ -194,12 +211,18 @@ class App(tk.Tk):
         self._panel_hist = HistogramPanel(right)
         self._panel_hist.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
 
-        self._panel_multi = MultiImagePanel(right, title="Componentes")
+        self._panel_multi = MultiImagePanel(right, title="Informações Complementares")
         self._panel_multi.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         self._panel_multi.grid_remove()  # Oculto por padrão
 
         StyledButton(right, text="Salvar resultado…",
                      command=self._save_result).grid(row=2, column=0, pady=(6, 0))
+
+    def _on_param_frame_resize(self, _=None):
+        self._param_canvas.configure(scrollregion=self._param_canvas.bbox("all"))
+
+    def _on_param_canvas_resize(self, event):
+        self._param_canvas.itemconfig(self._param_frame_id, width=event.width)
 
     # ──────── Lista de processos ────────
     def _update_process_list(self):
@@ -256,66 +279,75 @@ class App(tk.Tk):
         cfg = self._param_configs()
         if pid in cfg:
             for widget in cfg[pid]:
-                widget.pack(fill="x", pady=2)
+                widget.pack(fill="x", pady=3, padx=4)
                 self._param_widgets.append(widget)
         else:
             tk.Label(self._param_frame, text="(sem parâmetros)",
                      font=("Segoe UI", 9, "italic"),
-                     fg="#585b70", bg="#181825").pack()
+                     fg="#585b70", bg="#181825").pack(pady=8)
+
+        # Atualiza scrollregion após construir
+        self._param_frame.update_idletasks()
+        self._param_canvas.configure(scrollregion=self._param_canvas.bbox("all"))
 
     def _param_configs(self) -> dict:
         """Retorna dicionário pid -> lista de widgets de parâmetro."""
         F = self._param_frame
         BG = "#181825"
 
-        def slider(label, from_, to, default, res=1.0):
-            return LabeledSlider(F, label, from_=from_, to=to,
-                                 default=default, resolution=res, bg=BG)
+        def entry(label, from_, to, default, res=1.0):
+            return LabeledEntry(F, label, from_=from_, to=to,
+                                default=default, resolution=res, bg=BG)
 
         def check(label, default=False):
             return LabeledCheckbox(F, label, default=default, bg=BG)
 
+        def option(label, options, default=None):
+            return LabeledOptionMenu(F, label, options=options, default=default, bg=BG)
+
         # Kernel size compartilhado (filtros espaciais)
-        ksize = lambda: slider("Tamanho do kernel (ímpar)", 3, 31, 5, 2)
+        ksize = lambda: entry("Tamanho do kernel (ímpar)", 3, 31, 5, 2)
 
         return {
-            "threshold":       [slider("Limiar k", 0, 255, 128, 1)],
-            "log_transform":   [slider("Ganho c", 0.1, 10.0, 1.0, 0.1)],
-            "power_transform": [slider("Ganho c", 0.1, 5.0, 1.0, 0.1),
-                                slider("Gama γ", 0.1, 5.0, 1.0, 0.1)],
-            "intensity_slice": [slider("Mínimo A", 0, 255, 100, 1),
-                                slider("Máximo B", 0, 255, 200, 1),
+            "threshold":       [entry("Limiar k", 0, 255, 128, 1)],
+            "log_transform":   [entry("Ganho c", 0.1, 10.0, 1.0, 0.1)],
+            "power_transform": [entry("Ganho c", 0.1, 5.0, 1.0, 0.1),
+                                entry("Gama γ", 0.1, 5.0, 1.0, 0.1)],
+            "intensity_slice": [entry("Mínimo A", 0, 255, 100, 1),
+                                entry("Máximo B", 0, 255, 200, 1),
                                 check("Preservar fundo", True)],
-            "gaussian_blur":   [slider("Desvio padrão σ", 0.1, 20.0, 2.0, 0.1),
+            "gaussian_blur":   [entry("Desvio padrão σ", 0.1, 20.0, 2.0, 0.1),
                                 ksize()],
             "median_filter":   [ksize()],
             "min_filter":      [ksize()],
             "max_filter":      [ksize()],
-            "unsharp_mask":    [slider("Ganho k", 0.1, 5.0, 1.5, 0.1),
-                                slider("Desvio padrão σ", 0.1, 10.0, 2.0, 0.1),
+            "unsharp_mask":    [entry("Ganho k", 0.1, 5.0, 1.5, 0.1),
+                                entry("Desvio padrão σ", 0.1, 10.0, 2.0, 0.1),
                                 ksize()],
             "laplacian":       [check("Usar diagonais (8-viz.)", True)],
-            "gauss_lpf":       [slider("Frequência de corte D₀", 1, 200, 30, 1)],
-            "gauss_hpf":       [slider("Frequência de corte D₀", 1, 200, 30, 1)],
-            "butter_lpf":      [slider("Frequência de corte D₀", 1, 200, 30, 1),
-                                slider("Ordem n", 1, 10, 2, 1)],
-            "butter_hpf":      [slider("Frequência de corte D₀", 1, 200, 30, 1),
-                                slider("Ordem n", 1, 10, 2, 1)],
-            "adaptive_median": [slider("Tamanho máx. janela", 3, 25, 7, 2)],
-            "gauss_noise":     [slider("Média μ", -50, 50, 0, 1),
-                                slider("Desvio padrão σ", 1, 100, 20, 1)],
-            "salt_noise":      [slider("Probabilidade (%)", 0.1, 20.0, 2.0, 0.1)],
-            "pepper_noise":    [slider("Probabilidade (%)", 0.1, 20.0, 2.0, 0.1)],
-            "saltpepper_noise":[slider("Probabilidade (%)", 0.1, 20.0, 2.0, 0.1)],
+            "gauss_lpf":       [entry("Frequência de corte D₀", 1, 200, 30, 1)],
+            "gauss_hpf":       [entry("Frequência de corte D₀", 1, 200, 30, 1)],
+            "butter_lpf":      [entry("Frequência de corte D₀", 1, 200, 30, 1),
+                                entry("Ordem n", 1, 10, 2, 1)],
+            "butter_hpf":      [entry("Frequência de corte D₀", 1, 200, 30, 1),
+                                entry("Ordem n", 1, 10, 2, 1)],
+            "adaptive_median": [entry("Tamanho máx. janela", 3, 25, 7, 2)],
+            "gauss_noise":     [entry("Média μ", -50, 50, 0, 1),
+                                entry("Desvio padrão σ", 1, 100, 20, 1)],
+            "sp_noise":        [option("Tipo de ruído", ["ambos", "sal", "pimenta"], "ambos"),
+                                entry("Prob. sal (%)", 0.1, 20.0, 2.0, 0.1),
+                                entry("Prob. pimenta (%)", 0.1, 20.0, 2.0, 0.1)],
         }
 
     def _get_param_values(self) -> list:
         """Retorna valores atuais dos widgets de parâmetro."""
         vals = []
         for w in self._param_widgets:
-            if isinstance(w, LabeledSlider):
+            if isinstance(w, (LabeledEntry, LabeledSlider)):
                 vals.append(w.get())
             elif isinstance(w, LabeledCheckbox):
+                vals.append(w.get())
+            elif isinstance(w, LabeledOptionMenu):
                 vals.append(w.get())
         return vals
 
@@ -433,6 +465,15 @@ class App(tk.Tk):
             self._panel_hist.grid_remove()
             self._panel_multi.grid()
 
+        elif pid == "sobel":
+            # result é (img_gradient, img_gx, img_gy)
+            img_grad, img_gx, img_gy = result
+            self._img_result = img_grad
+            self._panel_result.set_image(img_grad)
+            self._panel_multi.set_images({"Gx (horizontal)": img_gx, "Gy (vertical)": img_gy})
+            self._panel_hist.grid_remove()
+            self._panel_multi.grid()
+
         else:
             self._img_result = result
             self._panel_result.set_image(result)
@@ -540,14 +581,12 @@ class App(tk.Tk):
         elif pid == "gauss_noise":
             return pnoise.add_gaussian_noise(img, float(p[0]), float(p[1]))
 
-        elif pid == "salt_noise":
-            return pnoise.add_salt_noise(img, float(p[0]) / 100.0)
-
-        elif pid == "pepper_noise":
-            return pnoise.add_pepper_noise(img, float(p[0]) / 100.0)
-
-        elif pid == "saltpepper_noise":
-            return pnoise.add_salt_pepper_noise(img, float(p[0]) / 100.0)
+        elif pid == "sp_noise":
+            # p[0] = tipo ("ambos"/"sal"/"pimenta"), p[1] = prob_sal, p[2] = prob_pimenta
+            noise_type = str(p[0])
+            prob_salt = float(p[1]) / 100.0
+            prob_pepper = float(p[2]) / 100.0
+            return pnoise.add_salt_pepper_unified(img, prob_salt, prob_pepper, noise_type)
 
         else:
             raise ValueError(f"Processo desconhecido: {pid}")

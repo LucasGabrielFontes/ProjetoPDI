@@ -70,3 +70,27 @@ def add_salt_pepper_noise(img: Image.Image, prob: float = 0.02) -> Image.Image:
         return result
 
     return _apply_noise_to_channels(img, _add)
+
+
+def add_salt_pepper_unified(
+    img: Image.Image,
+    prob_salt: float = 0.02,
+    prob_pepper: float = 0.02,
+    noise_type: str = "ambos"
+) -> Image.Image:
+    """
+    Ruído sal-e-pimenta com controle individual de probabilidade.
+    noise_type: 'sal' | 'pimenta' | 'ambos'
+    """
+    def _add(arr):
+        result = arr.copy()
+        rnd = np.random.random(arr.shape)
+        if noise_type in ("sal", "ambos"):
+            result[rnd < prob_salt] = 255.0
+        if noise_type in ("pimenta", "ambos"):
+            # Usar outra amostra para pimenta, independente do sal
+            rnd2 = np.random.random(arr.shape)
+            result[rnd2 < prob_pepper] = 0.0
+        return result
+
+    return _apply_noise_to_channels(img, _add)
