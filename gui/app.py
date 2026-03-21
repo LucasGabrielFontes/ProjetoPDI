@@ -415,9 +415,35 @@ class App(tk.Tk):
         if self._img_original is None:
             messagebox.showwarning("Sem imagem", "Carregue uma imagem primeiro.")
             return
-        if not self._process_id:
+
+        # Verifica se há item selecionado na lista
+        sel = self._listbox.curselection()
+        if not sel:
             messagebox.showwarning("Sem processo", "Selecione um processo na lista.")
             return
+
+        # Verifica se o item selecionado está habilitado para o tipo de imagem atual
+        idx = sel[0]
+        if not self._is_process_enabled(idx):
+            pid, name, req_gray, req_rgb = self._process_items[idx]
+            if req_rgb:
+                motivo = "requer imagem colorida RGB"
+            elif req_gray:
+                motivo = "requer imagem em escala de cinza"
+            else:
+                motivo = "não disponível para este tipo de imagem"
+            messagebox.showwarning(
+                "Processo não disponível",
+                f"'{name}' {motivo}.\n\nPor favor, selecione um processo compatível com a imagem carregada."
+            )
+            self._status_var.set(f"⚠ '{name}' não disponível: {motivo}.")
+            return
+
+        # Garante que o process_id está atualizado com a seleção atual
+        pid, name, _, _ = self._process_items[idx]
+        if self._process_id != pid:
+            self._process_id = pid
+            self._build_param_panel(pid)
 
         self._status_var.set("⏳ Processando…")
         self.update_idletasks()
