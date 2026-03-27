@@ -385,7 +385,11 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         self._panel_hist = HistogramPanel(right)
         self._panel_hist.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
 
-        self._panel_multi = MultiImagePanel(right, title="Informações Complementares")
+        self._panel_multi = MultiImagePanel(
+            right, title="Informações Complementares",
+            on_download=self._save_multi_image,
+            on_select=self._on_multi_select
+        )
         self._panel_multi.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         self._panel_multi.grid_remove()  # Oculto por padrão
 
@@ -612,6 +616,10 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             messagebox.showerror("Erro ao abrir imagem", str(e))
 
     def _save_result(self):
+        # Se o painel multi-imagem estiver ativo, salva a imagem selecionada
+        if self._panel_multi.winfo_ismapped():
+            self._save_multi_image()
+            return
         if self._img_result is None:
             messagebox.showwarning("Nenhum resultado", "Aplique um processo antes de salvar.")
             return
@@ -627,6 +635,34 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             self._status_var.set(f"✓ Salvo em: {path.split('/')[-1]}")
         except Exception as e:
             messagebox.showerror("Erro ao salvar", str(e))
+
+    def _save_multi_image(self):
+        """Salva a imagem atualmente selecionada no painel multi-imagem."""
+        img = self._panel_multi.get_current_image()
+        if img is None:
+            messagebox.showwarning("Nenhum resultado", "Nenhuma imagem disponível para salvar.")
+            return
+        name = self._panel_multi.get_current_name().replace(" ", "_")
+        path = filedialog.asksaveasfilename(
+            title=f"Salvar '{name}'",
+            initialfile=f"{name}.png",
+            defaultextension=".png",
+            filetypes=[("Imagem PNG", "*.png")]
+        )
+        if not path:
+            return
+        try:
+            img.save(path)
+            self._status_var.set(f"✓ Salvo em: {path.split('/')[-1]}")
+        except Exception as e:
+            messagebox.showerror("Erro ao salvar", str(e))
+
+    def _on_multi_select(self, name: str, img):
+        """Chamado pelo MultiImagePanel ao clicar numa miniatura.
+        Atualiza o painel resultado e _img_result com a imagem selecionada."""
+        self._img_result = img
+        self._panel_result.set_image(img)
+        self._status_var.set(f"✓ Visualizando: {name}  — clique em 'Salvar resultado…' para baixar")
 
     # ──────── Resize ────────
     def _on_resize_w_changed(self, *_):

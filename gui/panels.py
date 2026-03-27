@@ -277,12 +277,19 @@ class ImagePanel(tk.LabelFrame):
 
 class MultiImagePanel(tk.LabelFrame):
     """
-    Painel para exibir múltiplas imagens lado a lado (ex: decomposições RGB/HSV).
+    Painel que exibe múltiplas imagens lado a lado.
+    Clique em uma miniatura para selecioná-la (borda azul).
+    A imagem selecionada pode ser baixada pelo botão abaixo.
     """
-    THUMB_W = 130
-    THUMB_H = 120
 
-    def __init__(self, parent, title: str, **kwargs):
+    THUMB_W = 140
+    THUMB_H = 130
+    COLOR_SELECTED   = "#89b4fa"   # azul Catppuccin
+    COLOR_UNSELECTED = "#313244"
+    BORDER_SELECTED  = 3
+    BORDER_NORMAL    = 1
+
+    def __init__(self, parent, title: str, on_download=None, on_select=None, **kwargs):
         super().__init__(
             parent, text=title,
             font=("Segoe UI", 10, "bold"),
@@ -290,43 +297,144 @@ class MultiImagePanel(tk.LabelFrame):
             bd=2, relief="groove",
             **kwargs
         )
+        self._images: list[tuple[str, Image.Image]] = []
+        self._index: int = 0
+        self._photos: list = []          # evita GC
+        self._thumb_frames: list = []    # frames clicáveis
+        self._on_download = on_download
+        self._on_select = on_select
+
+        # ── Layout ──
         self._inner = tk.Frame(self, bg="#1e1e2e")
-        self._inner.pack(expand=True, fill="both", padx=4, pady=4)
-        self._photos = []
-        self._labels = []
+        self._inner.pack(fill="both", expand=True, padx=4, pady=(4, 0))
+
+        # Barra inferior: rótulo selecionado + botão download
+        bottom = tk.Frame(self, bg="#1e1e2e")
+        bottom.pack(fill="x", padx=4, pady=(2, 4))
+        bottom.columnconfigure(0, weight=1)
+
+        self._lbl_selected = tk.Label(
+            bottom, text="",
+            font=("Segoe UI", 8, "italic"),
+            fg="#a6e3a1", bg="#1e1e2e", anchor="w"
+        )
+        self._lbl_selected.grid(row=0, column=0, sticky="ew")
+
+        self._btn_dl = tk.Button(
+            bottom, text="⬇  Baixar imagem selecionada…",
+            command=self._download_current,
+            font=("Segoe UI", 8, "bold"),
+            bg="#313244", fg="#89b4fa",
+            activebackground="#45475a", activeforeground="#89b4fa",
+            relief="flat", bd=0, padx=6, pady=4, cursor="hand2",
+            state="disabled"
+        )
+        self._btn_dl.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+    # ── API pública ──────────────────────────────────────────────
 
     def set_images(self, images: dict):
-        """
-        Exibe dicionário de {nome: imagem_PIL}.
-        Limpa painéis anteriores antes de exibir.
-        """
-        for w in self._labels:
+        """Recebe {nome: pil_image}, mostra miniaturas lado a lado."""
+        self._images = list(images.items())
+        self._index = 0
+        self._rebuild_thumbs()
+
+    def clear(self):
+        self._images = []
+        self._index = 0
+        self._photos.clear()
+        for w in self._thumb_frames:
             w.destroy()
-        self._labels.clear()
+        self._thumb_frames.clear()
+        self._lbl_selected.config(text="")
+        self._btn_dl.config(state="disabled")
+
+    def get_current_image(self) -> Image.Image | None:
+        if not self._images:
+            return None
+        return self._images[self._index][1]
+
+    def get_current_name(self) -> str:
+        if not self._images:
+            return ""
+        return self._images[self._index][0]
+
+    # ── Construção das miniaturas ─────────────────────────────────
+
+    def _rebuild_thumbs(self):
+        """Destrói e recria todas as miniaturas."""
+        for w in self._thumb_frames:
+            w.destroy()
+        self._thumb_frames.clear()
         self._photos.clear()
 
-        for name, img in images.items():
-            frame = tk.Frame(self._inner, bg="#1e1e2e")
-            frame.pack(side="left", padx=4, pady=4)
-
+        for i, (name, img) in enumerate(self._images):
             thumb = img.copy()
             thumb.thumbnail((self.THUMB_W, self.THUMB_H), Image.LANCZOS)
             photo = ImageTk.PhotoImage(thumb)
             self._photos.append(photo)
 
-            lbl_img = tk.Label(frame, image=photo, bg="#181825", relief="flat")
-            lbl_img.pack()
-            lbl_name = tk.Label(frame, text=name,
-                                font=("Segoe UI", 9, "bold"),
-                                fg="#a6e3a1", bg="#1e1e2e")
-            lbl_name.pack()
-            self._labels.extend([frame, lbl_img, lbl_name])
+            # Frame externo com borda colorida (simula seleção)
+            border_frame = tk.Frame(
+                self._inner, bg=self.COLOR_UNSELECTED,
+                bd=self.BORDER_NORMAL, relief="solid", cursor="hand2"
+            )
+            border_frame.pack(side="left", padx=6, pady=4)
+            self._thumb_frames.append(border_frame)
 
-    def clear(self):
-        for w in self._labels:
-            w.destroy()
-        self._labels.clear()
-        self._photos.clear()
+            lbl_img = tk.Label(border_frame, image=photo, bg="#181825", relief="flat")
+            lbl_img.pack(padx=1, pady=1)
+
+            lbl_name = tk.Label(
+                border_frame, text=name,
+                font=("Segoe UI", 8, "bold"),
+                fg="#cdd6f4", bg="#1e1e2e",
+                wraplength=self.THUMB_W
+            )
+            lbl_name.pack(pady=(0, 2))
+
+            # Bind clique em todos os widgets do frame
+            for widget in (border_frame, lbl_img, lbl_name):
+                widget.bind("<Button-1>", lambda e, idx=i: self._select(idx))
+
+        self._select(0)   # seleciona o primeiro por padrão
+
+    def _select(self, idx: int):
+        """Seleciona a miniatura de índice idx e atualiza destaques."""
+        self._index = idx
+        for i, frame in enumerate(self._thumb_frames):
+            if i == idx:
+                frame.config(bg=self.COLOR_SELECTED, bd=self.BORDER_SELECTED)
+            else:
+                frame.config(bg=self.COLOR_UNSELECTED, bd=self.BORDER_NORMAL)
+        name, img = self._images[idx]
+        self._lbl_selected.config(text=f"Selecionada: {name}")
+        self._btn_dl.config(state="normal")
+        if self._on_select:
+            self._on_select(name, img)
+
+    # ── Download ─────────────────────────────────────────────────
+
+    def _download_current(self):
+        if self._on_download:
+            self._on_download()
+        else:
+            from tkinter import filedialog, messagebox
+            img = self.get_current_image()
+            if img is None:
+                return
+            name = self.get_current_name().replace(" ", "_")
+            path = filedialog.asksaveasfilename(
+                title=f"Salvar '{name}'",
+                initialfile=f"{name}.png",
+                defaultextension=".png",
+                filetypes=[("Imagem PNG", "*.png")]
+            )
+            if path:
+                try:
+                    img.save(path)
+                except Exception as e:
+                    messagebox.showerror("Erro ao salvar", str(e))
 
 
 class HistogramPanel(tk.LabelFrame):
