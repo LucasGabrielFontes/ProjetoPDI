@@ -1,9 +1,58 @@
 """
-Módulo de decomposição de canais de cor.
-Implementa decomposição RGB e HSV conforme slides do professor (Seção 4).
+Módulo de decomposição de canais de cor e pseudo-coloração.
+Implementa decomposição RGB e HSV conforme slides do professor (Seção 4)
+e pseudo-coloração por mapeamento de colormap.
 """
 import numpy as np
 from PIL import Image
+
+# ── Pseudo-coloração ────────────────────────────────────────────────────────
+
+# Colormaps disponíveis (nome exibido → nome matplotlib)
+COLORMAPS = [
+    "jet", "hot", "cool", "hsv", "rainbow",
+    "viridis", "plasma", "inferno", "magma", "turbo",
+]
+
+# Cache de CLUT: {nome → array (256,3) uint8}
+_CLUT_CACHE: dict = {}
+
+
+def _build_clut(colormap: str) -> np.ndarray:
+    """Gera CLUT de 256 entradas RGB para o colormap dado (usa matplotlib)."""
+    import matplotlib.cm as cm
+    cmap = cm.get_cmap(colormap, 256)
+    lut = (cmap(np.arange(256))[:, :3] * 255).astype(np.uint8)  # (256, 3)
+    return lut
+
+
+def _get_clut(colormap: str) -> np.ndarray:
+    if colormap not in _CLUT_CACHE:
+        _CLUT_CACHE[colormap] = _build_clut(colormap)
+    return _CLUT_CACHE[colormap]
+
+
+def pseudo_colorize(img: Image.Image, colormap: str = "jet") -> Image.Image:
+    """
+    Mapeia uma imagem em escala de cinza para uma falsa imagem colorida (RGB)
+    aplicando o colormap especificado como tabela de pesquisa (CLUT).
+
+    Parâmetros
+    ----------
+    img : Image.Image
+        Imagem de entrada (qualquer modo; convertida para 'L' internamente).
+    colormap : str
+        Nome do colormap. Deve ser um dos valores em COLORMAPS.
+
+    Retorna
+    -------
+    Image.Image
+        Imagem PIL no modo 'RGB'.
+    """
+    gray = np.array(img.convert("L"), dtype=np.uint8)          # (H, W)
+    lut  = _get_clut(colormap)                                  # (256, 3)
+    rgb  = lut[gray]                                            # (H, W, 3)
+    return Image.fromarray(rgb, mode="RGB")
 
 
 def decompose_rgb(img: Image.Image) -> dict:

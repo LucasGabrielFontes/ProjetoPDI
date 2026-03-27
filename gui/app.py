@@ -18,7 +18,7 @@ try:
 except ImportError:
     _DND_AVAILABLE = False
 
-from gui.panels import ImagePanel, MultiImagePanel, HistogramPanel
+from gui.panels import ImagePanel, MultiImagePanel, HistogramPanel, ROIImagePanel
 from gui.widgets import LabeledEntry, LabeledSlider, LabeledCheckbox, LabeledOptionMenu, StyledButton
 
 import processing.color as pcolor
@@ -56,6 +56,7 @@ PROCESSES = [
     ("adaptive_median",  "15. Mediana Adaptativa",             True,  False),
     ("gauss_noise",      "16. Ruído Gaussiano Aditivo",        False, False),
     ("sp_noise",         "17. Ruído Sal-e-Pimenta",            False, False),
+    ("pseudo_color",     "18. Pseudo-coloração",               True,  False),
 ]
 
 
@@ -73,6 +74,9 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         self._is_gray: bool = False
         self._process_id: str = ""
         self._param_widgets: list = []
+
+        # ROI
+        self._roi_active: bool = False   # True = modo de desenho ativo no painel
 
         # Histórico de estados do resultado (pilha com limite)
         self._history: list[tuple[Image.Image, str]] = []
@@ -257,6 +261,42 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
                      command=self._convert_to_gray).grid(
             row=1, column=0, pady=(0, 4), sticky="ew")
 
+        # ── ROI ──
+        roi_lf = tk.LabelFrame(tools_frame, text="Região de Interesse (ROI)",
+                               font=("Segoe UI", 8, "bold"),
+                               fg="#89b4fa", bg="#181825",
+                               bd=1, relief="groove")
+        roi_lf.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        roi_lf.columnconfigure(0, weight=1)
+        roi_lf.columnconfigure(1, weight=1)
+
+        self._btn_roi_toggle = tk.Button(
+            roi_lf, text="✏  Selecionar ROI",
+            command=self._toggle_roi_mode,
+            font=("Segoe UI", 8, "bold"),
+            bg="#313244", fg="#cdd6f4",
+            activebackground="#45475a", activeforeground="#89b4fa",
+            relief="flat", bd=0, padx=6, pady=5, cursor="hand2"
+        )
+        self._btn_roi_toggle.grid(row=0, column=0, sticky="ew", padx=(4, 2), pady=(4, 2))
+
+        tk.Button(
+            roi_lf, text="🗑  Limpar ROI",
+            command=self._clear_roi,
+            font=("Segoe UI", 8, "bold"),
+            bg="#313244", fg="#f38ba8",
+            activebackground="#45475a", activeforeground="#f38ba8",
+            relief="flat", bd=0, padx=6, pady=5, cursor="hand2"
+        ).grid(row=0, column=1, sticky="ew", padx=(2, 4), pady=(4, 2))
+
+        self._roi_status_var = tk.StringVar(value="ROI: nenhuma")
+        tk.Label(
+            roi_lf, textvariable=self._roi_status_var,
+            font=("Segoe UI", 8, "italic"),
+            fg="#a6e3a1", bg="#181825",
+            wraplength=240, justify="left"
+        ).grid(row=1, column=0, columnspan=2, padx=4, pady=(0, 4), sticky="w")
+
         # ── Histórico: Desfazer / Refazer / Restaurar ──
         tk.Label(left, text="Histórico", font=("Segoe UI", 10, "bold"),
                  fg="#cdd6f4", bg="#181825").grid(row=6, column=0,
@@ -320,7 +360,11 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         center.rowconfigure(0, weight=1)
         center.rowconfigure(1, weight=0)
 
-        self._panel_orig = ImagePanel(center, title="Imagem Original  (arraste uma imagem aqui 🖼)")
+        self._panel_orig = ROIImagePanel(
+            center,
+            title="Imagem Original  (arraste uma imagem aqui 🖼)",
+            on_roi_set=self._on_roi_set
+        )
         self._panel_orig.grid(row=0, column=0, sticky="nsew")
 
         StyledButton(center, text="Abrir imagem…",
@@ -467,6 +511,7 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             "sp_noise":        [option("Tipo de ruído", ["ambos", "sal", "pimenta"], "ambos"),
                                 entry("Prob. sal (%)", 0.1, 20.0, 2.0, 0.1),
                                 entry("Prob. pimenta (%)", 0.1, 20.0, 2.0, 0.1)],
+            "pseudo_color":    [option("Colormap", pcolor.COLORMAPS, "jet")],
         }
 
     def _get_param_values(self) -> list:
@@ -683,6 +728,62 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             f"✓ Escala de Cinza (8 bits) | {w}×{h}  — original preservada  (Ctrl+Z para desfazer)"
         )
 
+    # ──────── ROI ────────
+    def _toggle_roi_mode(self):
+        """Ativa/desativa o modo de seleção de ROI no painel original."""
+        self._roi_active = not self._roi_active
+        self._panel_orig.set_roi_mode(self._roi_active)
+        if self._roi_active:
+            self._btn_roi_toggle.config(
+                text="❌  Cancelar ROI",
+                fg="#f38ba8",
+                bg="#45475a"
+            )
+            self._roi_status_var.set("ROI: clique e arraste na imagem…")
+        else:
+            self._btn_roi_toggle.config(
+                text="✏  Selecionar ROI",
+                fg="#cdd6f4",
+                bg="#313244"
+            )
+            roi = self._panel_orig.get_roi()
+            if roi:
+                x0, y0, x1, y1 = roi
+                self._roi_status_var.set(f"ROI: ({x0},{y0}) → ({x1},{y1})")
+            else:
+                self._roi_status_var.set("ROI: nenhuma")
+
+    def _clear_roi(self):
+        """Remove a ROI e desativa o modo de seleção."""
+        self._roi_active = False
+        self._panel_orig.set_roi_mode(False)
+        self._panel_orig.clear_roi()
+        self._btn_roi_toggle.config(
+            text="✏  Selecionar ROI",
+            fg="#cdd6f4",
+            bg="#313244"
+        )
+        self._roi_status_var.set("ROI: nenhuma")
+
+    def _on_roi_set(self, roi):
+        """Callback chamado pelo ROIImagePanel quando a seleção termina."""
+        # Desativa automaticamente o modo de desenho após finalizar
+        self._roi_active = False
+        self._panel_orig.set_roi_mode(False)
+        self._btn_roi_toggle.config(
+            text="✏  Selecionar ROI",
+            fg="#cdd6f4",
+            bg="#313244"
+        )
+        if roi:
+            x0, y0, x1, y1 = roi
+            self._roi_status_var.set(f"ROI: ({x0},{y0}) → ({x1},{y1})")
+            self._status_var.set(
+                f"✓ ROI definida: ({x0},{y0}) → ({x1},{y1})  — aplique um processo para usar"
+            )
+        else:
+            self._roi_status_var.set("ROI: inválida, tente novamente")
+
     # ──────── Sistema de Histórico ────────
     def _history_push(self, img: Image.Image, description: str):
         """Empilha o estado atual após processar; descarta estados 'futuros' se houver."""
@@ -892,10 +993,64 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         self._status_var.set(f"✗ Erro: {msg[:60]}")
 
     # ──────── Dispatch de processos ────────
+
+    # Processos cujo resultado é multi-imagem (dict) — ROI não aplicável
+    _ROI_INCOMPATIBLE = {"rgb_decomp", "hsv_decomp", "sobel", "laplacian"}
+
     def _dispatch(self):
         pid = self._process_id
         img = self._img_original
         p = self._get_param_values()
+
+        # Verifica ROI
+        roi = self._panel_orig.get_roi()
+        use_roi = (roi is not None) and (pid not in self._ROI_INCOMPATIBLE)
+
+        if use_roi:
+            # Recorta apenas a região da ROI e processa sobre ela
+            x0, y0, x1, y1 = roi
+            ow, oh = img.size
+            x0c = max(0, min(x0, ow)); x1c = max(0, min(x1, ow))
+            y0c = max(0, min(y0, oh)); y1c = max(0, min(y1, oh))
+            img_crop = img.crop((x0c, y0c, x1c, y1c))
+            roi_clipped = (x0c, y0c, x1c, y1c)
+            result = self._dispatch_core(pid, img_crop, p)
+            # Se o resultado é uma tupla (ex: hist_equalize), a imagem é o
+            # primeiro elemento; composita de volta e retorna nova tupla.
+            if isinstance(result, tuple):
+                img_roi = result[0]
+                composed = self._apply_roi_result(img, img_roi, roi_clipped)
+                return (composed,) + result[1:]
+            return self._apply_roi_result(img, result, roi_clipped)
+        else:
+            return self._dispatch_core(pid, img, p)
+
+    def _apply_roi_result(self, original: Image.Image, roi_result: Image.Image,
+                          roi: tuple) -> Image.Image:
+        """
+        Recorta `roi_result` para o tamanho da ROI e cola sobre uma cópia
+        da imagem original. Garante compatibilidade de modo entre os dois.
+        """
+        x0, y0, x1, y1 = roi
+        # Clipa coordenadas à imagem
+        ow, oh = original.size
+        x0 = max(0, min(x0, ow)); x1 = max(0, min(x1, ow))
+        y0 = max(0, min(y0, oh)); y1 = max(0, min(y1, oh))
+        rw, rh = x1 - x0, y1 - y0
+        if rw <= 0 or rh <= 0:
+            return roi_result  # Fallback: retorna resultado completo
+
+        # Redimensiona roi_result para o tamanho exato da ROI (caso difira)
+        roi_crop = roi_result.resize((rw, rh), Image.LANCZOS)
+
+        # Cópia do original no modo correto
+        out_mode = roi_result.mode  # O resultado pode mudar de modo (ex: L→RGB)
+        base = original.convert(out_mode).copy()
+        base.paste(roi_crop, (x0, y0))
+        return base
+
+    def _dispatch_core(self, pid: str, img: Image.Image, p: list):
+        """Executa o processo puro (sem ROI) e retorna o resultado."""
 
         if pid == "rgb_decomp":
             return pcolor.decompose_rgb(img)
@@ -988,6 +1143,10 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             prob_salt = float(p[1]) / 100.0
             prob_pepper = float(p[2]) / 100.0
             return pnoise.add_salt_pepper_unified(img, prob_salt, prob_pepper, noise_type)
+
+        elif pid == "pseudo_color":
+            colormap = str(p[0])
+            return pcolor.pseudo_colorize(img, colormap)
 
         else:
             raise ValueError(f"Processo desconhecido: {pid}")

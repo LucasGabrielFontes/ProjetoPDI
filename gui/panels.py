@@ -378,9 +378,164 @@ class HistogramPanel(tk.LabelFrame):
         self._fig.tight_layout(pad=0.5)
         self._canvas.draw()
 
+
     def clear(self):
         self._fig.clear()
         self._fig.text(0.5, 0.5, "Selecione 'Equalização de Histograma'",
                        ha='center', va='center',
                        color="#585b70", fontsize=9)
         self._canvas.draw()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ROIImagePanel — ImagePanel com seleção de retângulo de interesse
+# ══════════════════════════════════════════════════════════════════════
+
+class ROIImagePanel(ImagePanel):
+    """
+    Extensão de ImagePanel que permite ao usuário desenhar um retângulo de
+    interesse (ROI) sobre a imagem.
+
+    Modos
+    ------
+    ROI desativado (padrão): comportamento idêntico ao ImagePanel (pan, zoom).
+    ROI ativado: clique+arrasto desenha um retângulo tracejado; ao soltar o
+    botão, as coordenadas em pixels da imagem são armazenadas e o callback
+    on_roi_set(x0, y0, x1, y1) é chamado (se definido).
+    """
+
+    ROI_COLOR  = "#89b4fa"   # Azul claro (paleta Catppuccin)
+    ROI_FILL   = ""           # Sem preenchimento sólido
+    ROI_DASH   = (6, 3)       # Tracejado
+
+    def __init__(self, parent, title: str, on_roi_set=None, **kwargs):
+        super().__init__(parent, title, **kwargs)
+        self._roi_mode    = False
+        self._roi_start   = None
+        self._roi_rect_id = None
+        self._roi_img     = None          # (x0, y0, x1, y1) em coords da imagem
+        self._on_roi_set  = on_roi_set
+
+        self._rebind()
+
+    # ── API pública ──────────────────────────────────────────────────
+
+    def set_roi_mode(self, enabled: bool):
+        """Ativa/desativa o modo de seleção de ROI."""
+        self._roi_mode = enabled
+        self._rebind()
+
+    def get_roi(self):
+        """Retorna a ROI como (x0, y0, x1, y1) em coords de imagem, ou None."""
+        return self._roi_img
+
+    def clear_roi(self):
+        """Remove o retângulo de ROI do canvas e reseta o estado."""
+        self._roi_img   = None
+        self._roi_start = None
+        if self._roi_rect_id:
+            self._canvas.delete(self._roi_rect_id)
+            self._roi_rect_id = None
+
+    def set_image(self, img):
+        """Override: limpa ROI ao carregar nova imagem."""
+        self.clear_roi()
+        super().set_image(img)
+
+    def clear(self):
+        """Override: limpa ROI junto com a imagem."""
+        self.clear_roi()
+        super().clear()
+
+    # ── Bindings dinâmicos ───────────────────────────────────────────
+
+    def _rebind(self):
+        """Reconfigura bindings do mouse conforme o modo atual."""
+        cv = self._canvas
+        cv.unbind("<ButtonPress-1>")
+        cv.unbind("<B1-Motion>")
+        cv.unbind("<ButtonRelease-1>")
+
+        if self._roi_mode:
+            cv.bind("<ButtonPress-1>",   self._roi_start_draw)
+            cv.bind("<B1-Motion>",       self._roi_drag)
+            cv.bind("<ButtonRelease-1>", self._roi_end_draw)
+        else:
+            cv.bind("<ButtonPress-1>",   self._on_pan_start)
+            cv.bind("<B1-Motion>",       self._on_pan_drag)
+            cv.bind("<ButtonRelease-1>", self._on_pan_end)
+
+    # ── Desenho de ROI ────────────────────────────────────────────────
+
+    def _roi_start_draw(self, event):
+        self._roi_start = (event.x, event.y)
+        if self._roi_rect_id:
+            self._canvas.delete(self._roi_rect_id)
+            self._roi_rect_id = None
+
+    def _roi_drag(self, event):
+        if self._roi_start is None:
+            return
+        x0, y0 = self._roi_start
+        x1, y1 = event.x, event.y
+        if self._roi_rect_id:
+            self._canvas.delete(self._roi_rect_id)
+        self._roi_rect_id = self._canvas.create_rectangle(
+            x0, y0, x1, y1,
+            outline=self.ROI_COLOR,
+            fill=self.ROI_FILL,
+            dash=self.ROI_DASH,
+            width=2,
+            tags="roi_rect"
+        )
+
+    def _roi_end_draw(self, event):
+        if self._roi_start is None:
+            return
+        cx0, cy0 = self._roi_start
+        cx1, cy1 = event.x, event.y
+
+        # Normaliza ordem
+        cx0, cx1 = min(cx0, cx1), max(cx0, cx1)
+        cy0, cy1 = min(cy0, cy1), max(cy0, cy1)
+
+        # Converte para coordenadas da imagem
+        ix0, iy0 = self._canvas_to_image(cx0, cy0)
+        ix1, iy1 = self._canvas_to_image(cx1, cy1)
+
+        if ix0 is None or ix1 is None or ix0 >= ix1 or iy0 >= iy1:
+            self.clear_roi()
+            if self._on_roi_set:
+                self._on_roi_set(None)
+            return
+
+        self._roi_img = (ix0, iy0, ix1, iy1)
+        if self._on_roi_set:
+            self._on_roi_set(self._roi_img)
+
+    # ── Re-render: mantém retângulo sobre a imagem ────────────────────
+
+    def _render(self):
+        """Override: redesenha imagem e coloca overlay de ROI por cima."""
+        super()._render()
+        self._redraw_roi_overlay()
+
+    def _redraw_roi_overlay(self):
+        if self._roi_img is None:
+            return
+        ix0, iy0, ix1, iy1 = self._roi_img
+        cx0 = self._offset_x + ix0 * self._zoom
+        cy0 = self._offset_y + iy0 * self._zoom
+        cx1 = self._offset_x + ix1 * self._zoom
+        cy1 = self._offset_y + iy1 * self._zoom
+
+        if self._roi_rect_id:
+            self._canvas.delete(self._roi_rect_id)
+        self._roi_rect_id = self._canvas.create_rectangle(
+            cx0, cy0, cx1, cy1,
+            outline=self.ROI_COLOR,
+            fill=self.ROI_FILL,
+            dash=self.ROI_DASH,
+            width=2,
+            tags="roi_rect"
+        )
