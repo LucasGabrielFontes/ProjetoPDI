@@ -1007,7 +1007,11 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             img_grad, img_gx, img_gy = result
             self._img_result = img_grad
             self._panel_result.set_image(img_grad)
-            self._panel_multi.set_images({"Gx (horizontal)": img_gx, "Gy (vertical)": img_gy})
+            self._panel_multi.set_images({
+                "Magnitude |G|": img_grad,
+                "Gx — bordas verticais": img_gx,
+                "Gy — bordas horizontais": img_gy,
+            })
             self._panel_hist.grid_remove()
             self._panel_multi.grid()
 
