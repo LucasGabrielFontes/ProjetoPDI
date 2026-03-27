@@ -69,14 +69,21 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
 
         self._img_original: Image.Image | None = None
         self._img_result: Image.Image | None = None
+        self._img_first: Image.Image | None = None   # cópia da imagem recém-aberta
         self._is_gray: bool = False
         self._process_id: str = ""
         self._param_widgets: list = []
+
+        # Histórico de estados do resultado (pilha com limite)
+        self._history: list[tuple[Image.Image, str]] = []
+        self._history_index: int = -1
+        self._MAX_HISTORY: int = 30
 
         self._build_menu()
         self._build_layout()
         self._update_process_list()
         self._setup_drag_drop()
+        self._update_history_buttons()
 
     # ──────── Menu ────────
     def _build_menu(self):
@@ -97,6 +104,9 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         self.config(menu=menubar)
         self.bind_all("<Control-o>", lambda e: self._open_image())
         self.bind_all("<Control-s>", lambda e: self._save_result())
+        self.bind_all("<Control-z>", lambda e: self._undo())
+        self.bind_all("<Control-y>", lambda e: self._redo())
+        self.bind_all("<Control-Z>", lambda e: self._redo())  # Ctrl+Shift+Z
 
     # ──────── Layout principal ────────
     def _build_layout(self):
@@ -247,9 +257,52 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
                      command=self._convert_to_gray).grid(
             row=1, column=0, pady=(0, 4), sticky="ew")
 
+        # ── Histórico: Desfazer / Refazer / Restaurar ──
+        tk.Label(left, text="Histórico", font=("Segoe UI", 10, "bold"),
+                 fg="#cdd6f4", bg="#181825").grid(row=6, column=0,
+                                                   padx=8, pady=(8, 2), sticky="w")
+
+        hist_frame = tk.Frame(left, bg="#181825")
+        hist_frame.grid(row=7, column=0, padx=8, pady=(0, 4), sticky="ew")
+        hist_frame.columnconfigure(0, weight=1)
+        hist_frame.columnconfigure(1, weight=1)
+
+        self._btn_undo = tk.Button(
+            hist_frame, text="\u21a9 Desfazer",
+            command=self._undo,
+            font=("Segoe UI", 8, "bold"),
+            bg="#313244", fg="#cdd6f4",
+            activebackground="#45475a", activeforeground="#cdd6f4",
+            relief="flat", bd=0, padx=6, pady=5, cursor="hand2",
+            state="disabled", disabledforeground="#45475a"
+        )
+        self._btn_undo.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+
+        self._btn_redo = tk.Button(
+            hist_frame, text="\u21aa Refazer",
+            command=self._redo,
+            font=("Segoe UI", 8, "bold"),
+            bg="#313244", fg="#cdd6f4",
+            activebackground="#45475a", activeforeground="#cdd6f4",
+            relief="flat", bd=0, padx=6, pady=5, cursor="hand2",
+            state="disabled", disabledforeground="#45475a"
+        )
+        self._btn_redo.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+
+        self._btn_restore = tk.Button(
+            hist_frame, text="\u21ba Restaurar Original",
+            command=self._restore_original,
+            font=("Segoe UI", 8, "bold"),
+            bg="#45475a", fg="#f38ba8",
+            activebackground="#585b70", activeforeground="#f38ba8",
+            relief="flat", bd=0, padx=6, pady=5, cursor="hand2",
+            state="disabled", disabledforeground="#585b70"
+        )
+        self._btn_restore.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+
         # Botão Aplicar processo
         btn_frame = tk.Frame(left, bg="#181825")
-        btn_frame.grid(row=6, column=0, padx=8, pady=8, sticky="ew")
+        btn_frame.grid(row=8, column=0, padx=8, pady=8, sticky="ew")
         StyledButton(btn_frame, text="▶  Aplicar Processo",
                      command=self._apply_process, accent=True).pack(fill="x")
 
@@ -258,7 +311,7 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         tk.Label(left, textvariable=self._status_var,
                  font=("Segoe UI", 8), fg="#585b70", bg="#181825",
                  wraplength=290, justify="left"
-                 ).grid(row=7, column=0, padx=8, pady=(0, 8), sticky="w")
+                 ).grid(row=9, column=0, padx=8, pady=(0, 8), sticky="w")
 
         # ── Central: imagem original ──
         center = tk.Frame(main, bg="#1e1e2e")
@@ -494,6 +547,11 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             self._panel_multi.clear()
             self._refresh_list_state()
 
+            # Guarda cópia da imagem original e limpa histórico
+            self._img_first = self._img_original.copy()
+            self._history.clear()
+            self._history_index = -1
+
             # Atualiza campos de resize com dimensões reais
             w, h = self._img_original.size
             self._resize_aspect_lock = True
@@ -504,6 +562,7 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             tipo = "Escala de cinza (8 bits)" if self._is_gray else "Colorida RGB (24 bits)"
             nome = path.split("/")[-1]
             self._status_var.set(f"✓ {nome} | {w}×{h} | {tipo}")
+            self._update_history_buttons()
         except Exception as e:
             messagebox.showerror("Erro ao abrir imagem", str(e))
 
@@ -590,9 +649,11 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         else:
             self._panel_hist.clear()
 
+        desc = f"Resize {orig_w}×{orig_h}→{new_w}×{new_h}"
+        self._history_push(resized, desc)
         tipo = "Escala de cinza (8 bits)" if self._is_gray else "Colorida RGB (24 bits)"
         self._status_var.set(
-            f"✓ Resize: {orig_w}×{orig_h} → {new_w}×{new_h} | {tipo}  (salve o resultado)"
+            f"✓ {desc} | {tipo}  (Ctrl+Z para desfazer)"
         )
 
     # ──────── Conversão para Escala de Cinza ────────
@@ -616,10 +677,112 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         hist = phist.compute_histogram(gray)
         self._panel_hist.show_histograms(hist)
 
+        self._history_push(gray, "Converter para Cinza")
         w, h = gray.size
         self._status_var.set(
-            f"✓ Escala de Cinza (8 bits) | {w}×{h}  — imagem original preservada  (salve o resultado)"
+            f"✓ Escala de Cinza (8 bits) | {w}×{h}  — original preservada  (Ctrl+Z para desfazer)"
         )
+
+    # ──────── Sistema de Histórico ────────
+    def _history_push(self, img: Image.Image, description: str):
+        """Empilha o estado atual após processar; descarta estados 'futuros' se houver."""
+        if img is None:
+            return
+        # Descarta tudo após o índice atual (branch de redo)
+        self._history = self._history[: self._history_index + 1]
+        # Limita tamanho da pilha
+        if len(self._history) >= self._MAX_HISTORY:
+            self._history.pop(0)
+        self._history.append((img.copy(), description))
+        self._history_index = len(self._history) - 1
+        self._update_history_buttons()
+
+    def _undo(self):
+        """Desfaz a última operação, recuando um estado no histórico."""
+        if self._history_index < 0:
+            return  # Nada para desfazer
+        if self._history_index == 0:
+            # Volta para o estado "sem resultado" (antes do primeiro processo)
+            self._history_index = -1
+            self._img_result = None
+            self._panel_result.clear()
+            self._panel_hist.clear()
+            self._panel_multi.clear()
+            self._status_var.set("↩ Desfeito — sem resultado (imagem original no painel)")
+        else:
+            self._history_index -= 1
+            img, desc = self._history[self._history_index]
+            self._img_result = img
+            self._panel_result.set_image(img)
+            # Atualiza histograma se grayscale
+            self._panel_multi.grid_remove()
+            self._panel_hist.grid()
+            if img.mode == "L":
+                self._panel_hist.show_histograms(phist.compute_histogram(img))
+            else:
+                self._panel_hist.clear()
+            self._status_var.set(f"↩ Desfeito → voltou para: {desc}")
+        self._update_history_buttons()
+
+    def _redo(self):
+        """Refaz a operação desfeita, avançando um estado no histórico."""
+        if self._history_index >= len(self._history) - 1:
+            return  # Não há nada para refazer
+        self._history_index += 1
+        img, desc = self._history[self._history_index]
+        self._img_result = img
+        self._panel_result.set_image(img)
+        self._panel_multi.grid_remove()
+        self._panel_hist.grid()
+        if img.mode == "L":
+            self._panel_hist.show_histograms(phist.compute_histogram(img))
+        else:
+            self._panel_hist.clear()
+        self._status_var.set(f"↪ Refeito → {desc}")
+        self._update_history_buttons()
+
+    def _restore_original(self):
+        """Restaura a imagem para o estado em que foi aberta, descartando todo o histórico."""
+        if self._img_first is None:
+            messagebox.showwarning("Sem imagem original", "Nenhuma imagem foi carregada.")
+            return
+        confirm = messagebox.askyesno(
+            "Restaurar Original",
+            "Isso descartará TODO o histórico de processamento.\n"
+            "A imagem retornará ao estado em que foi aberta.\n\n"
+            "Deseja continuar?"
+        )
+        if not confirm:
+            return
+        # Restaura estado
+        self._img_original = self._img_first.copy()
+        self._is_gray = (self._img_first.mode == "L")
+        self._img_result = None
+        self._history.clear()
+        self._history_index = -1
+        # Atualiza UI
+        self._panel_orig.set_image(self._img_original)
+        self._panel_result.clear()
+        self._panel_hist.clear()
+        self._panel_multi.clear()
+        self._refresh_list_state()
+        w, h = self._img_original.size
+        self._resize_aspect_lock = True
+        self._resize_w_var.set(w)
+        self._resize_h_var.set(h)
+        self._resize_aspect_lock = False
+        tipo = "Escala de cinza (8 bits)" if self._is_gray else "Colorida RGB (24 bits)"
+        self._status_var.set(f"↺ Imagem original restaurada | {w}×{h} | {tipo}")
+        self._update_history_buttons()
+
+    def _update_history_buttons(self):
+        """Habilita/desabilita os botões de Undo, Redo e Restaurar conforme o estado."""
+        can_undo    = self._history_index >= 0
+        can_redo    = self._history_index < len(self._history) - 1
+        can_restore = self._img_first is not None
+        self._btn_undo.config(   state="normal"   if can_undo    else "disabled")
+        self._btn_redo.config(   state="normal"   if can_redo    else "disabled")
+        self._btn_restore.config(state="normal"   if can_restore else "disabled")
 
     # ──────── Aplicar processo ────────
     def _apply_process(self):
@@ -721,7 +884,8 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             else:
                 self._panel_hist.clear()
 
-        self._status_var.set(f"✓ {name} aplicado com sucesso.")
+        self._status_var.set(f"✓ {name} aplicado com sucesso.  (Ctrl+Z para desfazer)")
+        self._history_push(self._img_result, name)
 
     def _on_process_error(self, msg: str):
         messagebox.showerror("Erro no processamento", msg)
