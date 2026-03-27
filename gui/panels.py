@@ -13,11 +13,15 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 class ImagePanel(tk.LabelFrame):
     """
-    Painel para exibir uma imagem PIL com título.
-    Redimensiona automaticamente para caber no painel.
+    Painel interativo para exibir uma imagem PIL com:
+      - Zoom via scroll do mouse (centrado no cursor)
+      - Pan via arrasto com botão esquerdo
+      - Conta-gotas: exibe coordenadas e valores de pixel ao passar o mouse
+      - Duplo-clique para ajustar zoom ao tamanho do painel
     """
-    MAX_W = 420
-    MAX_H = 380
+    MIN_ZOOM   = 0.02
+    MAX_ZOOM   = 30.0
+    ZOOM_STEP  = 1.15   # Fator de ampliação/redução por passo de scroll
 
     def __init__(self, parent, title: str, **kwargs):
         super().__init__(
@@ -27,32 +31,249 @@ class ImagePanel(tk.LabelFrame):
             bd=2, relief="groove",
             **kwargs
         )
-        self._label = tk.Label(
+        # ── Estado interno ──
+        self._pil_image: Image.Image | None = None
+        self._zoom      = 1.0
+        self._offset_x  = 0.0   # posição no canvas onde o canto TL da imagem é desenhado
+        self._offset_y  = 0.0
+        self._pan_last  = None   # última posição do mouse durante arrasto
+        self._tk_image  = None   # mantém referência para evitar GC
+
+        # ── Canvas de exibição ──
+        self._canvas = tk.Canvas(
             self, bg="#181825",
-            relief="flat", cursor="crosshair"
+            highlightthickness=0,
+            cursor="crosshair"
         )
-        self._label.pack(expand=True, fill="both", padx=6, pady=6)
-        self._photo = None
-        self._show_placeholder()
+        self._canvas.pack(fill="both", expand=True, padx=6, pady=(6, 2))
 
-    def _show_placeholder(self):
-        placeholder = Image.new("RGB", (self.MAX_W, self.MAX_H), color="#181825")
-        self._photo = ImageTk.PhotoImage(placeholder)
-        self._label.config(image=self._photo)
+        # ── Barra de informação (conta-gotas + zoom) ──
+        self._info_var = tk.StringVar(value=self._HINT)
+        self._info_bar = tk.Label(
+            self, textvariable=self._info_var,
+            font=("Courier New", 8),
+            fg="#a6e3a1", bg="#1e1e2e",
+            anchor="w", padx=6
+        )
+        self._info_bar.pack(fill="x", pady=(0, 4))
 
+        # ── Bindings ──
+        cv = self._canvas
+        cv.bind("<Configure>",        self._on_configure)
+        # Zoom — Linux (Button-4/5) e Windows/Mac (MouseWheel)
+        cv.bind("<Button-4>",         lambda e: self._zoom_at(e.x, e.y, self.ZOOM_STEP))
+        cv.bind("<Button-5>",         lambda e: self._zoom_at(e.x, e.y, 1.0 / self.ZOOM_STEP))
+        cv.bind("<MouseWheel>",       self._on_mousewheel)
+        # Pan
+        cv.bind("<ButtonPress-1>",    self._on_pan_start)
+        cv.bind("<B1-Motion>",        self._on_pan_drag)
+        cv.bind("<ButtonRelease-1>",  self._on_pan_end)
+        # Conta-gotas (movimento do mouse)
+        cv.bind("<Motion>",           self._on_mouse_move)
+        cv.bind("<Leave>",            lambda e: self._info_var.set(self._zoom_text()))
+        # Duplo-clique → ajustar zoom
+        cv.bind("<Double-Button-1>",  lambda e: self._fit_and_center())
+
+    # ────────────────────────── textos auxiliares ──────────────────────────
+    _HINT = "scroll: zoom  ·  arrastar: pan  ·  duplo-clique: ajustar"
+
+    def _zoom_text(self) -> str:
+        return f"🔍 {self._zoom * 100:.0f}%  —  {self._HINT}"
+
+    # ────────────────────────── API pública ──────────────────────────
     def set_image(self, img: Image.Image):
-        """Exibe a imagem redimensionada para caber no painel."""
+        """Carrega uma nova imagem e ajusta o zoom para caber no painel."""
         if img is None:
-            self._show_placeholder()
+            self.clear()
             return
-        img_copy = img.copy()
-        img_copy.thumbnail((self.MAX_W, self.MAX_H), Image.LANCZOS)
-        self._photo = ImageTk.PhotoImage(img_copy)
-        self._label.config(image=self._photo)
+        self._pil_image = img.copy()
+        self._fit_and_center()
+        self._info_var.set(self._zoom_text())
 
     def clear(self):
-        self._show_placeholder()
+        """Remove a imagem e exibe o placeholder."""
+        self._pil_image = None
+        self._zoom      = 1.0
+        self._offset_x  = self._offset_y = 0.0
+        self._tk_image  = None
+        self._info_var.set(self._HINT)
+        self._canvas.delete("all")
+        self._draw_placeholder()
 
+    # ────────────────────────── placeholder ──────────────────────────
+    def _draw_placeholder(self):
+        cw = self._canvas.winfo_width()
+        ch = self._canvas.winfo_height()
+        cx = cw // 2 if cw > 1 else 200
+        cy = ch // 2 if ch > 1 else 150
+        self._canvas.create_text(
+            cx, cy,
+            text="Sem imagem",
+            fill="#45475a",
+            font=("Segoe UI", 13, "italic"),
+            tags="placeholder",
+            anchor="center"
+        )
+
+    # ────────────────────────── zoom / fit ──────────────────────────
+    def _fit_and_center(self):
+        """Ajusta zoom para que a imagem caiba no canvas e a centraliza."""
+        if self._pil_image is None:
+            return
+        cw = self._canvas.winfo_width()
+        ch = self._canvas.winfo_height()
+        if cw < 2 or ch < 2:
+            # Canvas ainda não foi redimensionado — tenta novamente mais tarde
+            self._canvas.after(50, self._fit_and_center)
+            return
+        iw, ih = self._pil_image.size
+        self._zoom     = min(cw / iw, ch / ih)
+        self._offset_x = (cw - iw * self._zoom) / 2.0
+        self._offset_y = (ch - ih * self._zoom) / 2.0
+        self._render()
+        self._info_var.set(self._zoom_text())
+
+    def _zoom_at(self, cx: float, cy: float, factor: float):
+        """Aplica fator de zoom mantendo o ponto (cx, cy) fixo no canvas."""
+        new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self._zoom * factor))
+        if abs(new_zoom - self._zoom) < 1e-9:
+            return
+        scale         = new_zoom / self._zoom
+        self._offset_x = cx - scale * (cx - self._offset_x)
+        self._offset_y = cy - scale * (cy - self._offset_y)
+        self._zoom     = new_zoom
+        self._render()
+        self._info_var.set(self._zoom_text())
+
+    # ────────────────────────── renderização ──────────────────────────
+    def _render(self):
+        """
+        Renderiza apenas a região visível da imagem no canvas.
+        Eficiente para imagens grandes ou zoom elevado.
+        """
+        if self._pil_image is None:
+            return
+        cw = self._canvas.winfo_width()
+        ch = self._canvas.winfo_height()
+        if cw < 2 or ch < 2:
+            return
+
+        iw, ih   = self._pil_image.size
+        zoom     = self._zoom
+        ox, oy   = self._offset_x, self._offset_y
+
+        # Região da imagem visível (coordenadas de pixel da imagem)
+        src_x0 = max(0.0, -ox / zoom)
+        src_y0 = max(0.0, -oy / zoom)
+        src_x1 = min(float(iw), (cw - ox) / zoom)
+        src_y1 = min(float(ih), (ch - oy) / zoom)
+
+        if src_x1 <= src_x0 + 0.5 or src_y1 <= src_y0 + 0.5:
+            # Imagem fora da área visível
+            self._canvas.delete("all")
+            return
+
+        # Tamanho de destino (pixels do canvas a pintar)
+        dst_w = max(1, round((src_x1 - src_x0) * zoom))
+        dst_h = max(1, round((src_y1 - src_y0) * zoom))
+
+        # Recorta e redimensiona apenas o trecho visível
+        crop_box = (
+            max(0,  int(src_x0)),
+            max(0,  int(src_y0)),
+            min(iw, int(src_x1) + 1),
+            min(ih, int(src_y1) + 1),
+        )
+        crop     = self._pil_image.crop(crop_box)
+        resample = Image.NEAREST if zoom >= 4.0 else Image.LANCZOS
+        try:
+            rendered = crop.resize((dst_w, dst_h), resample)
+        except Exception:
+            return
+
+        self._tk_image = ImageTk.PhotoImage(rendered)
+        dst_x = max(0, round(ox))
+        dst_y = max(0, round(oy))
+
+        self._canvas.delete("all")
+        self._canvas.create_image(dst_x, dst_y, anchor="nw", image=self._tk_image)
+
+    # ────────────────────────── eventos de canvas ──────────────────────────
+    def _on_configure(self, _event=None):
+        if self._pil_image is None:
+            self._canvas.delete("all")
+            self._draw_placeholder()
+        else:
+            self._render()
+
+    # ── Scroll / Zoom ──
+    def _on_mousewheel(self, event):
+        """Windows/Mac: event.delta positivo = zoom in."""
+        factor = self.ZOOM_STEP if event.delta > 0 else 1.0 / self.ZOOM_STEP
+        self._zoom_at(event.x, event.y, factor)
+
+    # ── Pan ──
+    def _on_pan_start(self, event):
+        self._pan_last = (event.x, event.y)
+        self._canvas.config(cursor="fleur")
+
+    def _on_pan_drag(self, event):
+        if self._pan_last is None:
+            return
+        dx, dy       = event.x - self._pan_last[0], event.y - self._pan_last[1]
+        self._offset_x += dx
+        self._offset_y += dy
+        self._pan_last = (event.x, event.y)
+        self._render()
+
+    def _on_pan_end(self, _event=None):
+        self._pan_last = None
+        self._canvas.config(cursor="crosshair")
+
+    # ── Conta-gotas ──
+    def _canvas_to_image(self, cx: float, cy: float):
+        """Converte coordenadas do canvas para pixel da imagem original."""
+        if self._pil_image is None or self._zoom == 0:
+            return None, None
+        px = int((cx - self._offset_x) / self._zoom)
+        py = int((cy - self._offset_y) / self._zoom)
+        iw, ih = self._pil_image.size
+        if 0 <= px < iw and 0 <= py < ih:
+            return px, py
+        return None, None
+
+    def _on_mouse_move(self, event):
+        if self._pil_image is None:
+            return
+        px, py = self._canvas_to_image(event.x, event.y)
+        if px is None:
+            # Cursor fora da imagem → mostra só zoom
+            self._info_var.set(self._zoom_text())
+            return
+        try:
+            pixel = self._pil_image.getpixel((px, py))
+        except Exception:
+            return
+
+        mode = self._pil_image.mode
+        if mode == "L":
+            pixel_info = f"L={pixel}"
+        elif mode == "RGB":
+            r, g, b    = pixel
+            pixel_info = f"R={r:>3}  G={g:>3}  B={b:>3}"
+        elif mode == "RGBA":
+            r, g, b, a = pixel
+            pixel_info = f"R={r:>3}  G={g:>3}  B={b:>3}  A={a:>3}"
+        else:
+            pixel_info = str(pixel)
+
+        zoom_pct = f"  │  🔍{self._zoom * 100:.0f}%"
+        self._info_var.set(f"x={px:<5} y={py:<5} │  {pixel_info}{zoom_pct}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# As classes abaixo permanecem inalteradas
+# ══════════════════════════════════════════════════════════════════════
 
 class MultiImagePanel(tk.LabelFrame):
     """
@@ -138,10 +359,10 @@ class HistogramPanel(tk.LabelFrame):
         if hist_after is not None:
             ax1 = self._fig.add_subplot(1, 2, 1)
             ax2 = self._fig.add_subplot(1, 2, 2)
-            axes = [(ax1, hist_before, "Antes", "#89b4fa"),
-                    (ax2, hist_after, "Depois", "#a6e3a1")]
+            axes = [(ax1, hist_before, "Antes",  "#89b4fa"),
+                    (ax2, hist_after,  "Depois", "#a6e3a1")]
         else:
-            ax1 = self._fig.add_subplot(1, 1, 1)
+            ax1  = self._fig.add_subplot(1, 1, 1)
             axes = [(ax1, hist_before, "Histograma", "#89b4fa")]
 
         for ax, hist, title, color in axes:

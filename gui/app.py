@@ -434,8 +434,8 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
         if _DND_AVAILABLE:
             self._panel_orig.drop_target_register(DND_FILES)
             self._panel_orig.dnd_bind("<<Drop>>", self._on_drop)
-            self._panel_orig._label.drop_target_register(DND_FILES)
-            self._panel_orig._label.dnd_bind("<<Drop>>", self._on_drop)
+            self._panel_orig._canvas.drop_target_register(DND_FILES)
+            self._panel_orig._canvas.dnd_bind("<<Drop>>", self._on_drop)
         # Destaca visualmente o painel como drop target
         self._panel_orig.config(relief="groove")
 
