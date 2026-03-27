@@ -11,6 +11,13 @@ import threading
 import numpy as np
 from PIL import Image
 
+# Tenta importar tkinterdnd2 para suporte a Drag & Drop nativo
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    _DND_AVAILABLE = True
+except ImportError:
+    _DND_AVAILABLE = False
+
 from gui.panels import ImagePanel, MultiImagePanel, HistogramPanel
 from gui.widgets import LabeledEntry, LabeledSlider, LabeledCheckbox, LabeledOptionMenu, StyledButton
 
@@ -52,7 +59,7 @@ PROCESSES = [
 ]
 
 
-class App(tk.Tk):
+class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Processamento Digital de Imagens — UFPB")
@@ -69,6 +76,7 @@ class App(tk.Tk):
         self._build_menu()
         self._build_layout()
         self._update_process_list()
+        self._setup_drag_drop()
 
     # ──────── Menu ────────
     def _build_menu(self):
@@ -170,9 +178,78 @@ class App(tk.Tk):
         self._param_frame.bind("<Configure>", self._on_param_frame_resize)
         self._param_canvas.bind("<Configure>", self._on_param_canvas_resize)
 
-        # Botão Aplicar
+        # ── Ferramentas de manipulação básica ──
+        tk.Label(left, text="Ferramentas", font=("Segoe UI", 10, "bold"),
+                 fg="#cdd6f4", bg="#181825").grid(row=4, column=0,
+                                                   padx=8, pady=(8, 2), sticky="w")
+
+        tools_frame = tk.Frame(left, bg="#181825")
+        tools_frame.grid(row=5, column=0, padx=8, pady=(0, 4), sticky="ew")
+        tools_frame.columnconfigure(0, weight=1)
+
+        # Resize
+        resize_lf = tk.LabelFrame(tools_frame, text="Redimensionar",
+                                  font=("Segoe UI", 8, "bold"),
+                                  fg="#a6e3a1", bg="#181825",
+                                  bd=1, relief="groove")
+        resize_lf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        resize_lf.columnconfigure(0, weight=1)
+        resize_lf.columnconfigure(1, weight=1)
+        resize_lf.columnconfigure(2, weight=1)
+
+        tk.Label(resize_lf, text="W:", font=("Segoe UI", 8),
+                 fg="#cdd6f4", bg="#181825").grid(row=0, column=0, padx=(4, 0), pady=4)
+        self._resize_w_var = tk.IntVar(value=512)
+        self._resize_w_entry = tk.Entry(
+            resize_lf, textvariable=self._resize_w_var, width=5,
+            font=("Segoe UI", 9, "bold"),
+            bg="#313244", fg="#a6e3a1",
+            insertbackground="#a6e3a1",
+            relief="flat", bd=4, justify="center"
+        )
+        self._resize_w_entry.grid(row=0, column=1, padx=2, pady=4)
+
+        tk.Label(resize_lf, text="H:", font=("Segoe UI", 8),
+                 fg="#cdd6f4", bg="#181825").grid(row=1, column=0, padx=(4, 0), pady=2)
+        self._resize_h_var = tk.IntVar(value=512)
+        self._resize_h_entry = tk.Entry(
+            resize_lf, textvariable=self._resize_h_var, width=5,
+            font=("Segoe UI", 9, "bold"),
+            bg="#313244", fg="#a6e3a1",
+            insertbackground="#a6e3a1",
+            relief="flat", bd=4, justify="center"
+        )
+        self._resize_h_entry.grid(row=1, column=1, padx=2, pady=2)
+
+        self._keep_aspect_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            resize_lf, text="Manter proporção",
+            variable=self._keep_aspect_var,
+            font=("Segoe UI", 8),
+            bg="#181825", fg="#cdd6f4",
+            selectcolor="#313244",
+            activebackground="#181825",
+            activeforeground="#89b4fa",
+            relief="flat"
+        ).grid(row=2, column=0, columnspan=3, padx=4, pady=(0, 2), sticky="w")
+
+        StyledButton(resize_lf, text="↔  Aplicar Resize",
+                     command=self._apply_resize).grid(
+            row=3, column=0, columnspan=3, padx=4, pady=(0, 6), sticky="ew")
+
+        # Bind: quando W muda e manter proporção está ativo, atualiza H
+        self._resize_w_var.trace_add("write", self._on_resize_w_changed)
+        self._resize_h_var.trace_add("write", self._on_resize_h_changed)
+        self._resize_aspect_lock = False  # evita recursão
+
+        # Botão converter para cinza
+        StyledButton(tools_frame, text="⬜  Converter para Escala de Cinza",
+                     command=self._convert_to_gray).grid(
+            row=1, column=0, pady=(0, 4), sticky="ew")
+
+        # Botão Aplicar processo
         btn_frame = tk.Frame(left, bg="#181825")
-        btn_frame.grid(row=4, column=0, padx=8, pady=8, sticky="ew")
+        btn_frame.grid(row=6, column=0, padx=8, pady=8, sticky="ew")
         StyledButton(btn_frame, text="▶  Aplicar Processo",
                      command=self._apply_process, accent=True).pack(fill="x")
 
@@ -181,7 +258,7 @@ class App(tk.Tk):
         tk.Label(left, textvariable=self._status_var,
                  font=("Segoe UI", 8), fg="#585b70", bg="#181825",
                  wraplength=290, justify="left"
-                 ).grid(row=5, column=0, padx=8, pady=(0, 8), sticky="w")
+                 ).grid(row=7, column=0, padx=8, pady=(0, 8), sticky="w")
 
         # ── Central: imagem original ──
         center = tk.Frame(main, bg="#1e1e2e")
@@ -190,7 +267,7 @@ class App(tk.Tk):
         center.rowconfigure(0, weight=1)
         center.rowconfigure(1, weight=0)
 
-        self._panel_orig = ImagePanel(center, title="Imagem Original")
+        self._panel_orig = ImagePanel(center, title="Imagem Original  (arraste uma imagem aqui 🖼)")
         self._panel_orig.grid(row=0, column=0, sticky="nsew")
 
         StyledButton(center, text="Abrir imagem…",
@@ -351,14 +428,44 @@ class App(tk.Tk):
                 vals.append(w.get())
         return vals
 
+    # ──────── Drag & Drop ────────
+    def _setup_drag_drop(self):
+        """Registra o painel original como alvo de Drag & Drop."""
+        if _DND_AVAILABLE:
+            self._panel_orig.drop_target_register(DND_FILES)
+            self._panel_orig.dnd_bind("<<Drop>>", self._on_drop)
+            self._panel_orig._label.drop_target_register(DND_FILES)
+            self._panel_orig._label.dnd_bind("<<Drop>>", self._on_drop)
+        # Destaca visualmente o painel como drop target
+        self._panel_orig.config(relief="groove")
+
+    def _on_drop(self, event):
+        """Callback chamado quando um arquivo é soltado sobre o painel."""
+        # O caminho pode vir entre chaves em sistemas Linux: {/path/to/file}
+        raw = event.data.strip()
+        if raw.startswith("{") and raw.endswith("}"):
+            path = raw[1:-1]
+        else:
+            path = raw.split()[0]  # Pega o primeiro arquivo se houver múltiplos
+        self._load_image_from_path(path)
+
     # ──────── Abrir / Salvar ────────
     def _open_image(self):
         path = filedialog.askopenfilename(
-            title="Abrir imagem PNG",
-            filetypes=[("Imagens PNG", "*.png"), ("Todos os arquivos", "*.*")]
+            title="Abrir imagem",
+            filetypes=[
+                ("Imagens", "*.png *.jpg *.jpeg *.bmp *.tiff *.tif *.webp"),
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg *.jpeg"),
+                ("Todos os arquivos", "*.*")
+            ]
         )
         if not path:
             return
+        self._load_image_from_path(path)
+
+    def _load_image_from_path(self, path: str):
+        """Carrega uma imagem a partir do caminho e atualiza o estado da UI."""
         try:
             img = Image.open(path)
             # Detecta se é grayscale
@@ -387,9 +494,16 @@ class App(tk.Tk):
             self._panel_multi.clear()
             self._refresh_list_state()
 
-            tipo = "Escala de cinza (8 bits)" if self._is_gray else "Colorida RGB (24 bits)"
+            # Atualiza campos de resize com dimensões reais
             w, h = self._img_original.size
-            self._status_var.set(f"✓ {path.split('/')[-1]} | {w}×{h} | {tipo}")
+            self._resize_aspect_lock = True
+            self._resize_w_var.set(w)
+            self._resize_h_var.set(h)
+            self._resize_aspect_lock = False
+
+            tipo = "Escala de cinza (8 bits)" if self._is_gray else "Colorida RGB (24 bits)"
+            nome = path.split("/")[-1]
+            self._status_var.set(f"✓ {nome} | {w}×{h} | {tipo}")
         except Exception as e:
             messagebox.showerror("Erro ao abrir imagem", str(e))
 
@@ -409,6 +523,103 @@ class App(tk.Tk):
             self._status_var.set(f"✓ Salvo em: {path.split('/')[-1]}")
         except Exception as e:
             messagebox.showerror("Erro ao salvar", str(e))
+
+    # ──────── Resize ────────
+    def _on_resize_w_changed(self, *_):
+        """Atualiza H proporcionalmente quando W muda (se 'manter proporção' ativo)."""
+        if self._resize_aspect_lock or not self._keep_aspect_var.get():
+            return
+        if self._img_original is None:
+            return
+        try:
+            new_w = self._resize_w_var.get()
+            if new_w <= 0:
+                return
+            orig_w, orig_h = self._img_original.size
+            new_h = max(1, round(new_w * orig_h / orig_w))
+            self._resize_aspect_lock = True
+            self._resize_h_var.set(new_h)
+            self._resize_aspect_lock = False
+        except (tk.TclError, ValueError):
+            pass
+
+    def _on_resize_h_changed(self, *_):
+        """Atualiza W proporcionalmente quando H muda (se 'manter proporção' ativo)."""
+        if self._resize_aspect_lock or not self._keep_aspect_var.get():
+            return
+        if self._img_original is None:
+            return
+        try:
+            new_h = self._resize_h_var.get()
+            if new_h <= 0:
+                return
+            orig_w, orig_h = self._img_original.size
+            new_w = max(1, round(new_h * orig_w / orig_h))
+            self._resize_aspect_lock = True
+            self._resize_w_var.set(new_w)
+            self._resize_aspect_lock = False
+        except (tk.TclError, ValueError):
+            pass
+
+    def _apply_resize(self):
+        """Redimensiona a imagem (resultado no painel direito; original inalterada)."""
+        if self._img_original is None:
+            messagebox.showwarning("Sem imagem", "Carregue uma imagem primeiro.")
+            return
+        try:
+            new_w = int(self._resize_w_var.get())
+            new_h = int(self._resize_h_var.get())
+            if new_w <= 0 or new_h <= 0:
+                raise ValueError("Dimensões devem ser positivas.")
+        except (tk.TclError, ValueError) as e:
+            messagebox.showerror("Dimensões inválidas",
+                                 f"Informe valores inteiros positivos para W e H.\n{e}")
+            return
+
+        orig_w, orig_h = self._img_original.size
+        resized = self._img_original.resize((new_w, new_h), Image.LANCZOS)
+
+        # Coloca no painel resultado; original permanece inalterada
+        self._img_result = resized
+        self._panel_result.set_image(resized)
+        self._panel_hist.grid()
+        self._panel_multi.grid_remove()
+        if resized.mode == "L":
+            hist = phist.compute_histogram(resized)
+            self._panel_hist.show_histograms(hist)
+        else:
+            self._panel_hist.clear()
+
+        tipo = "Escala de cinza (8 bits)" if self._is_gray else "Colorida RGB (24 bits)"
+        self._status_var.set(
+            f"✓ Resize: {orig_w}×{orig_h} → {new_w}×{new_h} | {tipo}  (salve o resultado)"
+        )
+
+    # ──────── Conversão para Escala de Cinza ────────
+    def _convert_to_gray(self):
+        """Converte para cinza 8-bit (resultado no painel direito; original inalterada)."""
+        if self._img_original is None:
+            messagebox.showwarning("Sem imagem", "Carregue uma imagem primeiro.")
+            return
+        if self._is_gray:
+            messagebox.showinfo("Já em cinza",
+                                "A imagem já está em escala de cinza (8 bits).")
+            return
+
+        gray = self._img_original.convert("L")
+
+        # Coloca no painel resultado; original permanece colorida e inalterada
+        self._img_result = gray
+        self._panel_result.set_image(gray)
+        self._panel_hist.grid()
+        self._panel_multi.grid_remove()
+        hist = phist.compute_histogram(gray)
+        self._panel_hist.show_histograms(hist)
+
+        w, h = gray.size
+        self._status_var.set(
+            f"✓ Escala de Cinza (8 bits) | {w}×{h}  — imagem original preservada  (salve o resultado)"
+        )
 
     # ──────── Aplicar processo ────────
     def _apply_process(self):
