@@ -997,8 +997,11 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
             img_enhanced, img_lap = result
             self._img_result = img_enhanced
             self._panel_result.set_image(img_enhanced)
-            # Exibe o laplaciano no painel acessório
-            self._panel_multi.set_images({"Laplaciano ajustado": img_lap})
+            # Exibe o laplaciano e a imagem realçada no painel acessório
+            self._panel_multi.set_images({
+                "Imagem realçada": img_enhanced,
+                "Laplaciano ajustado": img_lap,
+            })
             self._panel_hist.grid_remove()
             self._panel_multi.grid()
 
