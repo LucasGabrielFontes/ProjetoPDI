@@ -31,16 +31,15 @@ def threshold(img: Image.Image, k: int) -> Image.Image:
 def log_transform(img: Image.Image, c: float) -> Image.Image:
     """
     Transformação logarítmica: s = c * log(1 + r)
-    Resultado normalizado para [0, 255].
+    O ganho c influencia diretamente o brilho da saída.
+    Valores de c maiores saturam mais pixels em 255 (imagem mais clara);
+    valores menores produzem uma imagem mais escura.
+    O valor "neutro" que mapeia exatamente 255 -> 255 é c ≈ 45.9.
     Funciona para imagens grayscale e coloridas (canal a canal).
     """
     def _apply_log(arr: np.ndarray) -> np.ndarray:
-        result = c * np.log1p(arr)  # log(1+r)
-        # Normaliza para [0, 255]
-        rmax = result.max()
-        if rmax > 0:
-            result = result / rmax * 255.0
-        return _clip_to_uint8(result)
+        result = c * np.log1p(arr)  # s = c * log(1 + r)
+        return _clip_to_uint8(result)  # clip direto, sem normalização
 
     if img.mode == "L":
         arr = _to_gray_array(img)

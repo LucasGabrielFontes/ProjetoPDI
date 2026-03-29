@@ -488,7 +488,7 @@ class App(TkinterDnD.Tk if _DND_AVAILABLE else tk.Tk):
 
         return {
             "threshold":       [entry("Limiar k", 0, 255, 128, 1)],
-            "log_transform":   [entry("Ganho c", 0.1, 10.0, 1.0, 0.1)],
+            "log_transform":   [entry("Ganho c", 1.0, 200.0, 46.0, 1.0)],
             "power_transform": [entry("Ganho c", 0.1, 5.0, 1.0, 0.1),
                                 entry("Gama γ", 0.1, 5.0, 1.0, 0.1)],
             "intensity_slice": [entry("Mínimo A", 0, 255, 100, 1),
